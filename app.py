@@ -69,29 +69,65 @@ def parse_indian_statements(raw_lines):
     return clean_transactions
 
 def convert_to_dataframe(structured_rows):
-    """Refines standard space blocks into transaction table entries."""
+    """Refines standard space blocks into transaction table entries using fallback parsing."""
     parsed_records = []
     
     for row in structured_rows:
         date = row["date"]
         body = row["text"]
         
-        # Isolate individual entries split by multiple white spaces
+        # Strategy A: Try splitting by wide space blocks first
         parts = [p.strip() for p in re.split(r'\s{2,}', body) if p.strip()]
         
+        # Strategy B: If everything collapsed into one big sentence (like your HDFC screenshot),
+        # we parse it from the back because Indian amounts usually end with clear numbers.
+        if len(parts) < 3:
+            # Split by single spaces just to extract numbers at the tail
+            all_words = body.split()
+            if len(all_words) >= 3:
+                balance = all_words[-1]
+                amount_candidate = all_words[-2]
+                
+                # Check if it looks like a secondary date or reference number
+                if '/' in all_words[-3] or len(all_words[-3]) > 8:
+                    narration = " ".join(all_words[:-2])
+                    # If it's a deposit or withdrawal based on narration keywords
+                    if "credit" in narration.lower() or "deposit" in narration.lower() or "redeem" in narration.lower():
+                        withdrawal, deposit = "0.00", amount_candidate
+                    else:
+                        withdrawal, deposit = amount_candidate, "0.00"
+                else:
+                    # Normal layout ending structure
+                    narration = " ".join(all_words[:-3])
+                    if "credit" in narration.lower() or "deposit" in narration.lower() or "redeem" in narration.lower():
+                        withdrawal, deposit = "0.00", all_words[-2]
+                    else:
+                        withdrawal, deposit = all_words[-2], "0.00"
+                
+                parsed_records.append({
+                    "Date": date,
+                    "Narration / Description": narration,
+                    "Withdrawal (Dr)": withdrawal,
+                    "Deposit (Cr)": deposit,
+                    "Closing Balance": balance
+                })
+                continue
+
+        # Normal Column Processing (For Bank of Baroda, SBI, ICICI layouts)
         if len(parts) >= 2:
             try:
-                # Most Indian tables place the current balance on the extreme right
                 balance = parts[-1]
-                
-                # Check if the transaction lists distinct separate Debit/Credit inputs
                 if len(parts) >= 4:
                     withdrawal = parts[-3]
                     deposit = parts[-2]
                     narration = " ".join(parts[:-3])
                 else:
-                    withdrawal = parts[-2] if "dr" in line.lower() or "-" in parts[-2] else "0.00"
-                    deposit = parts[-2] if not ("dr" in line.lower() or "-" in parts[-2]) else "0.00"
+                    # Intelligent guess for 3-part layout columns
+                    val = parts[-2]
+                    if "credit" in body.lower() or "deposit" in body.lower() or "redeem" in body.lower():
+                        withdrawal, deposit = "0.00", val
+                    else:
+                        withdrawal, deposit = val, "0.00"
                     narration = " ".join(parts[:-2])
             except:
                 narration = body
